@@ -147,17 +147,18 @@ function makeGemini(cfg){
  const call=async(input,opts,json)=>{opts=opts||{};const msgs=typeof input==='string'?[{role:'user',content:input}]:input;
   const contents=msgs.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]}));
   if(opts.images){const last=contents[contents.length-1];for(const b of [].concat(opts.images))last.parts.push({inline_data:{mime_type:b.type||'image/jpeg',data:await b64(b)}})}
-  const body=JSON.stringify({contents,generationConfig:Object.assign({temperature:json?0.1:0.6},json?{responseMimeType:'application/json'}:{})});
+  let gc=json?{responseMimeType:'application/json'}:null;const mk=()=>JSON.stringify(gc?{contents,generationConfig:gc}:{contents});
   let model=(opts.modelTier==='quick'?cfg.fast:cfg.model)||cfg.model||'gemini-flash-latest';
   for(let i=0;i<4;i++){let r;
-   try{r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(model)+':generateContent?key='+encodeURIComponent(cfg.key),{method:'POST',headers:{'Content-Type':'application/json'},body,signal:opts.signal})}
-   catch(e){throw{code:'upstream_error',message:'Sin conexión con Gemini'}}
+   try{r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(model)+':generateContent?key='+encodeURIComponent(cfg.key),{method:'POST',headers:{'Content-Type':'application/json'},body:mk(),signal:opts.signal})}
+   catch(e){throw{code:'gemini_error',message:'No se pudo conectar con Gemini. Revisa tu conexión a internet.'}}
    const j=await r.json().catch(()=>({}));const msg=(j.error&&j.error.message)||('HTTP '+r.status);
    if(r.status===429||r.status===503){if(i<3){if(IMP&&IMP.prog){IMP.prog=IMP.prog.replace(/ · esperando.*$/,'')+' · esperando al límite gratuito…';renderImport()}await sleep(20000*(i+1));continue}throw{code:'rate_limited',message:msg}}
    if(r.status===404&&model!==cfg.model&&cfg.model){model=cfg.model;continue}
-   if(!r.ok)throw{code:(r.status===400&&/key/i.test(msg))||r.status===401||r.status===403?'bad_key':'upstream_error',message:msg};
+   if(r.status===400&&gc&&/mime|generation|config|json/i.test(msg)&&i<3){gc=null;continue}
+   if(!r.ok){const badKey=(r.status===400&&/api key|api_key/i.test(msg))||r.status===401||r.status===403;throw{code:badKey?'bad_key':'gemini_error',message:badKey?'La clave de Gemini no es válida o no tiene acceso ('+msg+'). Revísala en Ajustes.':'Gemini respondió con un error ('+r.status+'): '+msg}}
    const text=((((j.candidates||[])[0]||{}).content||{}).parts||[]).map(p=>p.text||'').join('');
-   if(!text)throw{code:'empty_completion',message:(j.promptFeedback&&j.promptFeedback.blockReason)||'Respuesta vacía'};
+   if(!text)throw{code:'gemini_error',message:'Gemini no devolvió texto'+((j.promptFeedback&&j.promptFeedback.blockReason)?' (bloqueado: '+j.promptFeedback.blockReason+')':(((j.candidates||[])[0]||{}).finishReason?' (motivo: '+j.candidates[0].finishReason+')':''))+'.'};
    if(opts.onText)opts.onText({text,delta:text});return text}};
  const f=async(input,opts)=>({text:await call(input,opts,false),truncated:false});
  f.json=async(input,opts)=>{const t=await call(input,opts,true);try{return JSON.parse(t)}catch(e){const m=t.match(/[\[{][\s\S]*[\]}]/);if(m){try{return JSON.parse(m[0])}catch(e2){}}throw{code:'invalid_json',text:t}}};
